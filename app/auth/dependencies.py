@@ -19,6 +19,7 @@ from app.users.models import User
 from app.users.dependencies import get_user_repo
 from app.users.repository import UserRepository
 from app.users.use_cases.create_user_use_case import CreateUserUseCase
+from app.auth.use_cases.resend_verification_code_use_case import ResendVerificationCodeUseCase
 
 
 def get_provider_repo(
@@ -150,3 +151,19 @@ def get_verify_email_use_case(
 ) -> VerifyEmailUseCase:
     user_repo = UserRepository(session=session)
     return VerifyEmailUseCase(user_repository=user_repo, mail_service=mail_service)
+
+async def get_resend_verification_use_case(
+    session: AsyncSession = Depends(get_session)
+) -> ResendVerificationCodeUseCase:
+    """
+    Фабрика для сборки ResendVerificationCodeUseCase.
+    Принимает сессию БД из get_session и внедряет её во все слои.
+    """
+    user_repository = UserRepository(session)
+    mail_service = MailService()
+    
+    return ResendVerificationCodeUseCase(
+        user_repository=user_repository,
+        mail_service=mail_service,
+        session=session
+    )

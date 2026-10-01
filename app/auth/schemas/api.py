@@ -1,4 +1,4 @@
-from pydantic import BaseModel, ConfigDict, EmailStr, field_validator
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
 
 
 class SignUpRequest(BaseModel):
@@ -29,3 +29,6 @@ class UserResponse(BaseModel):
 
 class VerifyCodeRequest(BaseModel):
     code: str
+
+class ResendVerificationRequest(BaseModel):
+    expired_token: str = Field(..., description="Истекший verification_token, полученный при регистрации или прошлой отправке")

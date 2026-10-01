@@ -43,7 +43,7 @@ class SignUpUserWithPasswordUseCase:
 
         verification_code = f"{random.randint(1000, 9999)}"
 
-        verification_token = generate_email_token_for_code(user.id, verification_code)
+        verification_token = generate_email_token_for_code(user.id, verification_code, attempt=1)
         
         await self.mail_service.send_verification_code(
             email=user.email, 

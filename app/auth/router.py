@@ -6,14 +6,16 @@ import httpx
 from app.auth.dependencies import (
     get_current_user,
     get_refresh_tokens_use_case,
+    get_resend_verification_use_case,
     get_sign_out_use_case,
     get_sign_up_user_use_case,
     get_sign_in_user_with_password_use_case,
     get_sign_in_with_oauth_use_case,
     get_verify_email_use_case,
 )
-from app.auth.schemas.api import SignInRequest, SignUpRequest, UserResponse, VerifyCodeRequest
+from app.auth.schemas.api import ResendVerificationRequest, SignInRequest, SignUpRequest, UserResponse, VerifyCodeRequest
 from app.auth.use_cases.refresh_tokens_use_case import RefreshTokensUseCase
+from app.auth.use_cases.resend_verification_code_use_case import ResendVerificationCodeUseCase
 from app.auth.use_cases.sign_up_with_password_use_case import SignUpUserWithPasswordUseCase
 from app.auth.use_cases.sign_in_with_password_use_case import SignInWithPasswordUseCase
 from app.auth.use_cases.sign_in_with_oauth_use_case import SignInWithOAuthUseCase
@@ -299,3 +301,25 @@ async def verify_email(
     response.delete_cookie("verification_token")
     
     return {"status": "success", "message": "Email successfully verified!"}
+
+@router.post(
+    "/resend-verification", 
+    status_code=status.HTTP_200_OK,
+    summary="Повторная отправка кода верификации"
+)
+@router.post(
+    "/resend-verification", 
+    status_code=status.HTTP_200_OK,
+    summary="Повторная отправка кода верификации"
+)
+async def resend_verification(
+    request: ResendVerificationRequest,
+    use_case: ResendVerificationCodeUseCase = Depends(get_resend_verification_use_case)
+):
+    new_token = await use_case.execute(expired_token=request.expired_token)
+    
+    return {
+        "status": "success",
+        "message": "Новый код верификации отправлен на email",
+        "verification_token": new_token
+    }

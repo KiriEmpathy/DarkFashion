@@ -53,7 +53,7 @@ class MailService:
             return False
 
     async def send_verification_code(self, email: str, code: str) -> bool:
-        """Отправка 6-значного кода подтверждения."""
+        """Отправка 4-значного кода подтверждения."""
         html_content = f"""
         <html>
             <body style="font-family: Arial, sans-serif; text-align: center;">
