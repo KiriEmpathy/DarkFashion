@@ -1,6 +1,14 @@
+from secrets import token_hex, token_urlsafe
+
+from hashlib import sha256
+
+from base64 import urlsafe_b64encode
+
+from urllib.parse import urlencode
+
 from fastapi import APIRouter, HTTPException, Request, Response, status
 from fastapi.params import Depends
-from fastapi.responses import RedirectResponse
+from fastapi.responses import JSONResponse, RedirectResponse
 import httpx
 
 from app.auth.dependencies import (
@@ -107,81 +115,223 @@ async def sign_in(
 
 @router.get("/vk/login")
 async def vk_login(request: Request):
-    redirect_uri = "https://localhost:443/auth/vk/callback"
-    return await oauth.vk.authorize_redirect(request, redirect_uri)
+    # PKCE
+    code_verifier = token_urlsafe(64)
 
-@router.get("/vk/callback")
-async def callback_vk(
-    request: Request,
-    response: Response,
-    usecase: SignInWithOAuthUseCase = Depends(get_sign_in_with_oauth_use_case),
-):
-    # 1. Получаем токен от VK (Authlib автоматически обменяет code на токен)
-    try:
-        token = await oauth.vk.authorize_access_token(request)
-    except Exception as e:
-        raise HTTPException(status_code=400, detail="Ошибка авторизации")
+    code_challenge = (
+        urlsafe_b64encode(
+            sha256(code_verifier.encode("utf-8")).digest()
+        )
+        .decode("utf-8")
+        .rstrip("=")
+    )
 
-    user_id = token.get("user_id")
-    email = token.get("email") 
-    access_token_vk = token.get("access_token")
+    # OAuth state
+    state = token_urlsafe(32)
 
-    # 2. VK не отдает профиль в токене, запрашиваем данные вручную через httpx
-    try:
-        async with httpx.AsyncClient() as client:
-            resp = await client.get(
-                "https://vk.com",
-                params={
-                    "user_ids": user_id,
-                    "fields": "photo_200,first_name,last_name",
-                    "access_token": access_token_vk,
-                    "v": "5.131"
-                }
-            )
-            resp_data = resp.json()
-            
-            if "error" in resp_data:
-                raise HTTPException(status_code=400, detail="Ошибка получения профиля VK")
-                
-            vk_profile = resp_data["response"][0]
-    except Exception:
-        raise HTTPException(status_code=400, detail="Не удалось связаться с API VK")
+    # Сохраняем всё, что понадобится callback
+    request.session["vk_state"] = state
+    request.session["vk_code_verifier"] = code_verifier
 
-    # 3. Маппим данные от VK в формат, похожий на Google userinfo, 
-    # чтобы ваш UseCase мог их корректно обработать
-    user_info = {
-        "iss": "https://vk.com",
-        "sub": str(user_id),  # Уникальный ID пользователя в VK
-        "email": email,       # Может быть None, если у пользователя нет email в VK
-        "name": f"{vk_profile.get('first_name')} {vk_profile.get('last_name')}",
-        "picture": vk_profile.get("photo_200"),
-        "given_name": vk_profile.get("first_name"),
-        "family_name": vk_profile.get("last_name"),
+    params = {
+        "response_type": "code",
+        "client_id": settings.VK_CLIENT_ID,
+        "redirect_uri": settings.VK_REDIRECT_URI,
+        "state": state,
+        "scope": "vkid.personal_info email",
+        "code_challenge": code_challenge,
+        "code_challenge_method": "S256",
     }
 
-    # 4. Передаем нормализованные данные в ваш существующий UseCase
-    user, access_token, refresh_token = await usecase.execute(user_info, request)
+    url = (
+        "https://id.vk.com/authorize?"
+        + urlencode(params)
+    )
 
-    # 5. Устанавливаем те же самые куки
+    return RedirectResponse(url=url, status_code=302)
+
+@router.get("/vk/callback")
+async def vk_callback(
+    request: Request,
+    code: str,
+    state: str,
+    device_id: str,
+    usecase: SignInWithOAuthUseCase = Depends(
+        get_sign_in_with_oauth_use_case
+    ),
+):
+    # ==========================================
+    # 1. Проверяем state
+    # ==========================================
+
+    saved_state = request.session.pop("vk_state", None)
+
+    if not saved_state:
+        raise HTTPException(
+            status_code=400,
+            detail="OAuth-сессия не найдена",
+        )
+
+    if saved_state != state:
+        raise HTTPException(
+            status_code=400,
+            detail="Некорректный OAuth state",
+        )
+
+    # ==========================================
+    # 2. Забираем PKCE verifier
+    # ==========================================
+
+    code_verifier = request.session.pop(
+        "vk_code_verifier",
+        None,
+    )
+
+    if not code_verifier:
+        raise HTTPException(
+            status_code=400,
+            detail="PKCE code_verifier не найден",
+        )
+
+    # ==========================================
+    # 3. Обмениваем code на VK tokens
+    # ==========================================
+
+    token_payload = {
+        "grant_type": "authorization_code",
+        "code": code,
+        "device_id": device_id,
+        "client_id": settings.VK_CLIENT_ID,
+        "redirect_uri": settings.VK_REDIRECT_URI,
+        "state": state,
+        "code_verifier": code_verifier,
+    }
+
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        token_response = await client.post(
+            "https://id.vk.com/oauth2/auth",
+            data=token_payload,
+        )
+
+    token_data = token_response.json()
+
+    if token_response.is_error or token_data.get("error"):
+        raise HTTPException(
+            status_code=400,
+            detail=token_data.get(
+                "error_description",
+                token_data.get(
+                    "error",
+                    "Ошибка при получении VK token",
+                ),
+            ),
+        )
+
+    vk_access_token = token_data.get("access_token")
+
+    if not vk_access_token:
+        raise HTTPException(
+            status_code=400,
+            detail="VK не вернул access_token",
+        )
+
+    # ==========================================
+    # 4. Получаем VK profile
+    # ==========================================
+
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        profile_response = await client.post(
+            "https://id.vk.com/oauth2/user_info",
+            data={
+                "client_id": settings.VK_CLIENT_ID,
+                "access_token": vk_access_token,
+            },
+        )
+
+    profile_data = profile_response.json()
+
+    if profile_response.is_error or profile_data.get("error"):
+        raise HTTPException(
+            status_code=400,
+            detail=profile_data.get(
+                "error_description",
+                "Не удалось получить профиль VK ID",
+            ),
+        )
+
+    # ==========================================
+    # 5. Нормализуем VK profile
+    #    под твой общий OAuth use case
+    # ==========================================
+
+    vk_user = profile_data.get("user", {})
+
+    provider_id = vk_user.get("user_id")
+
+    if not provider_id:
+        raise HTTPException(
+            status_code=400,
+            detail="VK не вернул user_id",
+        )
+
+    first_name = vk_user.get("first_name", "")
+    last_name = vk_user.get("last_name", "")
+
+    name = f"{first_name} {last_name}".strip()
+
+    user_info = {
+        "iss": "https://id.vk.com",
+        "sub": str(provider_id),
+        "email": profile_data.get("email"),
+        "name": name or "VK User",
+        "picture": vk_user.get("avatar"),
+        "given_name": first_name,
+        "family_name": last_name,
+    }
+
+    # ==========================================
+    # 6. Твой общий OAuth use case
+    # ==========================================
+
+    user, access_token, refresh_token = await usecase.execute(
+        user_info=user_info,
+        provider="vk",
+        request=request,
+    )
+
+    # ==========================================
+    # 7. Выдаём cookies твоего приложения
+    # ==========================================
+
+    response = JSONResponse(
+        content={
+            "id": user.id,
+            "name": user.name,
+            "email": user.email,
+        }
+    )
+
     response.set_cookie(
         key="refresh_token",
         value=refresh_token,
         httponly=True,
         secure=True,
-        samesite="none",
+        samesite="lax",
         max_age=60 * 60 * 24 * 7,
         path="/",
     )
+
     response.set_cookie(
         key="access_token",
         value=access_token,
         httponly=True,
         secure=True,
-        samesite="none",
+        samesite="lax",
         max_age=60 * 15,
+        path="/",
     )
 
-    return user
+    return response
 
 
 

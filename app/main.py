@@ -1,3 +1,6 @@
+import os
+os.environ['AUTHLIB_INSECURE_TRANSPORT'] = '1'
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.sessions import SessionMiddleware
@@ -18,7 +21,7 @@ app.add_middleware(
     SessionMiddleware, 
     secret_key="your-super-secret-key",
     session_cookie="oauth_session", # Отдельное имя для OAuth!
-    same_site="none",               
+    same_site="lax",               
     https_only=True,                # Обязательно True для туннеля
 )
 
