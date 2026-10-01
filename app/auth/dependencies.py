@@ -1,5 +1,5 @@
 import jwt
-from fastapi import Depends, HTTPException, status
+from fastapi import Cookie, Depends, HTTPException, Request, status
 from fastapi.security import APIKeyCookie
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -87,36 +87,52 @@ security = APIKeyCookie(name="access_token", auto_error=False)
 
 
 async def get_current_user(
+    request: Request,  # Нужен для чтения OAuth сессии
     token: str | None = Depends(security),
+    access_token: str | None = Cookie(default=None),
     user_repo: UserRepository = Depends(get_user_repo),
 ) -> User:
-    if not token:
+    
+    # 1. Пытаемся найти классический токен (из Depends или куки напрямую)
+    final_token = token or access_token
+    user_id: str | None = None
+
+    if final_token:
+        try:
+            payload = jwt.decode(final_token, key=settings.JWT_KEY, algorithms=["HS256"])
+            user_id = payload.get("sub")
+            if user_id is None:
+                raise jwt.InvalidTokenError()
+        except jwt.ExpiredSignatureError:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail={"code": "TOKEN_EXPIRED", "message": "TOKEN_EXPIRED"},
+            )
+        except jwt.InvalidTokenError:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail={"code": "INVALID_TOKEN", "message": "INVALID_TOKEN"},
+            )
+
+    # 2. ФОЛБЕК: Если классического токена нет, проверяем OAuth-сессию
+    else:
+        # Starlette SessionMiddleware складывает данные в request.session
+        oauth_user_data = request.session.get("user")  # или как вы сохраняете пользователя при OAuth
+        if oauth_user_data:
+            # Предположим, вы сохраняете туда id пользователя
+            user_id = oauth_user_data.get("id") or oauth_user_data.get("sub")
+
+    # 3. Если ни один способ не дал user_id — отдаем 401
+    if not user_id:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail={
                 "code": "ACCESS_TOKEN_MISSING",
-                "message": "ACCESS_TOKEN_MISSING",
+                "message": "Authentication required. Provide access_token or OAuth session.",
             },
         )
 
-    try:
-        payload = jwt.decode(token, key=settings.JWT_KEY, algorithms=["HS256"])
-        user_id: str = payload.get("sub")
-
-        if user_id is None:
-            raise jwt.InvalidTokenError()
-
-    except jwt.ExpiredSignatureError:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail={"code": "TOKEN_EXPIRED", "message": "TOKEN_EXPIRED"},
-        )
-    except jwt.InvalidTokenError:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail={"code": "INVALID_TOKEN", "message": "INVALID_TOKEN"},
-        )
-
+    # 4. Ищем пользователя в базе данных
     user = await user_repo.find_by_id(int(user_id))
 
     if not user:

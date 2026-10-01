@@ -312,14 +312,45 @@ async def verify_email(
     status_code=status.HTTP_200_OK,
     summary="Повторная отправка кода верификации"
 )
+@router.post(
+    "/resend-verification", 
+    status_code=status.HTTP_200_OK,
+    summary="Повторная отправка кода верификации"
+)
+@router.post(
+    "/resend-verification", 
+    status_code=status.HTTP_200_OK,
+    summary="Повторная отправка кода верификации через Cookies"
+)
 async def resend_verification(
-    request: ResendVerificationRequest,
+    request: Request,
+    response: Response,
     use_case: ResendVerificationCodeUseCase = Depends(get_resend_verification_use_case)
 ):
-    new_token = await use_case.execute(expired_token=request.expired_token)
+    # 1. Достаем токен напрямую из кук запроса
+    # Замените "verification_token" на точное имя вашей куки
+    verification_token = request.cookies.get("verification_token")
+    
+    if not verification_token:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Verification token missing in cookies"
+        )
+        
+    # 2. Выполняем бизнес-логику (декодирование, проверка попыток, генерация нового кода)
+    new_token = await use_case.execute(expired_token=verification_token)
+    
+    # 3. Записываем новый обновленный токен обратно в куки ответа
+    response.set_cookie(
+        key="verification_token",
+        value=verification_token,
+        httponly=True,
+        secure=True,
+        samesite="none",
+        max_age=60 * 60 * 24 * 1,
+    )
     
     return {
         "status": "success",
-        "message": "Новый код верификации отправлен на email",
-        "verification_token": new_token
+        "message": "Новый код верификации отправлен на email"
     }
