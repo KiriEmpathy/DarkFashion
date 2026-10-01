@@ -1,0 +1,10 @@
+{
+    // Та самая магия: заставляем Pylance агрессивно предлагать импорты при вводе
+    "python.analysis.autoImportUserSymbols": true,
+    
+    // Говорим VS Code форматировать код через Ruff локально в этом проекте
+    "[python]": {
+        "editor.defaultFormatter": "charliermarsh.ruff",
+        "editor.formatOnSave": true
+    }
+}
